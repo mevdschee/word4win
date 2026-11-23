@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -21,7 +22,14 @@ import (
 // and paragraph formatting, lists (old \pn and Word's list tables), tables,
 // hyperlinks, pictures (PNG, JPEG and bitmaps) and heading styles.
 func ReadRTF(data []byte) (*Document, error) {
-	r := &rtfReader{data: data, doc: &Document{}}
+	return readRTF(data, false)
+}
+
+// readRTF reads RTF. Word's list items are numbered by their list
+// definitions, as Writer and Word do; with listText by the number they
+// were saved with (\listtext), which is what the writing program showed.
+func readRTF(data []byte, listText bool) (*Document, error) {
+	r := &rtfReader{data: data, doc: &Document{}, useListText: listText}
 	// Wine's RichEdit writes \li and \fi swapped: the first line's indent
 	// as \fi and the offset of the other lines as \li.
 	r.wine = bytes.Contains(data[:min(len(data), 2048)], []byte(`{\*\generator Wine`))
@@ -29,9 +37,9 @@ func ReadRTF(data []byte) (*Document, error) {
 	r.parse()
 	r.flushText()
 	if len(r.runs) > 0 { // text after the last \par
-		r.endParagraph(false)
+		r.endParagraph(0)
 	}
-	r.endTable()
+	r.closeTables(0)
 	if len(r.doc.Blocks) == 0 {
 		r.doc.Blocks = []Block{&Paragraph{}}
 	}
@@ -55,6 +63,8 @@ const (
 	destPn
 	destListTable
 	destListOverride
+	destListText
+	destShapeProp
 )
 
 type charProps struct {
@@ -71,9 +81,10 @@ type paraProps struct {
 	left, right, first         float64
 	before, after, lineSpacing float64
 	heading                    int
-	intbl                      bool
+	itap                       int // table depth: 0 outside tables, 1 in a table, 2 in a nested one
 	list                       *List
 	ls, ilvl                   int // Word list override and level
+	hasIlvl                    bool
 	borderBottom               bool
 	style                      int
 }
@@ -86,6 +97,10 @@ type rtfState struct {
 	// The style being defined in the stylesheet, or the font in the font
 	// table.
 	defIndex int
+	// In a \nesttableprops group: the row definition is of a nested table.
+	nestProps bool
+	// In a shape property: 1 in its name (\sn), 2 in its value (\sv).
+	propPart int
 }
 
 type fontEntry struct {
@@ -128,17 +143,31 @@ type rtfReader struct {
 	fieldInst strings.Builder
 	fieldLink string
 
-	pict      pictState
-	pageBreak bool
-	wine      bool
+	pict        pictState
+	pageBreak   bool
+	wine        bool
+	listText    strings.Builder // the number of a Word list item, as shown
+	useListText bool
+	listCount   map[int][]int   // per Word list: the last number per level
+	propName    strings.Builder // shape property name and value
+	propValue   strings.Builder
 
-	// Tables.
-	table    *Table
-	row      *Row
-	cell     *Cell
-	cellX    []float64
+	// Tables: the open tables, the outer one first, and the row
+	// definitions per depth.
+	tables   []*rtfTable
+	defX     map[int][]float64 // right cell boundaries
+	defMerge map[int][]int     // per cell: 0, 1 for \clmgf, 2 for \clmrg
+	merge    int               // \clmgf or \clmrg of the cell being defined
 	rowHdr   bool
-	inRowDef bool
+}
+
+// rtfTable is a table being read.
+type rtfTable struct {
+	t      *Table
+	row    *Row
+	cell   *Cell
+	xs     [][]float64 // the cell boundaries of every row
+	merges [][]int
 }
 
 type pictState struct {
@@ -147,6 +176,7 @@ type pictState struct {
 	picw, pich     int
 	goalW, goalH   int
 	scaleX, scaleY int
+	alt            string
 }
 
 func (r *rtfReader) push() {
@@ -171,6 +201,10 @@ func (r *rtfReader) pop() {
 	}
 	if old.dest == destStylesheet && r.state.dest == destStylesheet && old.defIndex >= 0 {
 		r.endStyle(old.defIndex)
+	}
+	if old.dest == destShapeProp && old.propPart == 2 && r.state.propPart != 2 &&
+		strings.TrimSpace(r.propName.String()) == "wzDescription" {
+		r.pict.alt = r.propValue.String()
 	}
 	// Paragraph properties are not scoped by groups in practice: RichEdit
 	// writes \pard inside a group and expects it to hold after it.
@@ -271,6 +305,7 @@ func (r *rtfReader) symbol(c byte) {
 	case '_':
 		r.textRune(0x2011)
 	case '-':
+		r.textRune(0xAD) // optional hyphen
 	case '\n', '\r':
 		r.word("par", 0, false)
 	case '\t':
@@ -291,7 +326,12 @@ func destSkipCandidate(r *rtfReader) destination {
 			end++
 		}
 		switch string(rest[1:end]) {
-		case "pn", "fldinst", "shppict", "listtable", "listoverridetable", "hyperlink":
+		case "pn", "fldinst", "shppict", "listtable", "listoverridetable", "hyperlink", "nesttableprops":
+			return r.state.dest // decided by the word itself
+		case "picprop":
+			if r.state.dest == destPict {
+				return destShapeProp
+			}
 			return r.state.dest // decided by the word itself
 		}
 	}
@@ -333,6 +373,11 @@ func (r *rtfReader) char(c byte) {
 			r.pict.hex.WriteByte(c)
 		}
 		return
+	case destListText, destShapeProp:
+		if c >= 0x20 {
+			r.textRune(rune(c))
+		}
+		return
 	case destNormal, destFieldResult:
 	default:
 		return
@@ -363,8 +408,8 @@ func (r *rtfReader) byteChar(b byte) {
 		if f := r.fonts[r.state.defIndex]; f != nil {
 			f.name += string(charmap.Windows1252.DecodeByte(b))
 		}
-	case destFieldInst:
-		r.fieldInst.WriteRune(charmap.Windows1252.DecodeByte(b))
+	case destFieldInst, destListText, destShapeProp:
+		r.textRune(charmap.Windows1252.DecodeByte(b))
 	}
 }
 
@@ -451,10 +496,21 @@ func (r *rtfReader) textRune(c rune) {
 			f.name += string(c)
 		}
 		return
+	case destListText:
+		r.listText.WriteRune(c)
+		return
+	case destShapeProp:
+		switch r.state.propPart {
+		case 1:
+			r.propName.WriteRune(c)
+		case 2:
+			r.propValue.WriteRune(c)
+		}
+		return
 	default:
 		return
 	}
-	if r.state.char.hidden {
+	if r.state.char.hidden || c < 0x20 && c != '\t' && c != '\n' {
 		return
 	}
 	if r.surrogate != 0 {
@@ -578,6 +634,19 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 			r.lists = map[int][]listLevel{}
 		}
 		return
+	case "listtext":
+		if st.dest == destNormal {
+			st.dest = destListText
+			r.listText.Reset()
+		} else {
+			st.dest = destSkip
+		}
+		return
+	case "nesttableprops":
+		if st.dest == destNormal {
+			st.nestProps = true
+		}
+		return
 	case "listoverridetable":
 		st.dest = destListOverride
 		if r.overrides == nil {
@@ -586,7 +655,7 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 		return
 	case "info", "header", "footer", "headerl", "headerr", "headerf", "footerl", "footerr", "footerf",
 		"footnote", "annotation", "xe", "tc", "txe", "rxe", "filetbl", "revtbl", "pgdsctbl",
-		"objdata", "pntext", "listtext", "themedata", "colorschememapping", "latentstyles",
+		"objdata", "pntext", "nonesttables", "themedata", "colorschememapping", "latentstyles",
 		"datastore", "xmlnstbl", "rsidtbl", "generator", "mmathPr", "fldtype", "bkmkstart", "bkmkend":
 		st.dest = destSkip
 		return
@@ -621,6 +690,37 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 	case destPict:
 		r.pictWord(word, param)
 		return
+	case destShapeProp:
+		switch word {
+		case "sn":
+			st.propPart = 1
+			r.propName.Reset()
+		case "sv":
+			st.propPart = 2
+			r.propValue.Reset()
+		case "u":
+			ru := rune(param)
+			if ru < 0 {
+				ru += 65536
+			}
+			r.textRune(ru)
+			r.skipChars = st.uc
+		}
+		return
+	case destListText:
+		if word == "tab" {
+			return
+		}
+		r.symbolWord(word, param)
+		if word == "u" {
+			ru := rune(param)
+			if ru < 0 {
+				ru += 65536
+			}
+			r.textRune(ru)
+			r.skipChars = st.uc
+		}
+		return
 	case destPn:
 		r.pnWord(word, param)
 		return
@@ -646,24 +746,47 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 	on := !hasParam || param != 0
 	switch word {
 	case "par":
-		r.endParagraph(false)
-	case "cell", "nestcell":
-		r.endParagraph(true)
-		r.endCell()
-	case "row", "nestrow":
-		r.endRow()
+		r.endParagraph(0)
+	case "cell":
+		r.endParagraph(1)
+		r.endCell(1)
+	case "nestcell":
+		d := max(2, pp.itap)
+		r.endParagraph(d)
+		r.endCell(d)
+	case "row":
+		r.endRow(1)
+	case "nestrow":
+		r.endRow(max(2, len(r.tables)))
 	case "trowd":
-		r.cellX = r.cellX[:0]
-		r.rowHdr = false
-		r.inRowDef = true
+		d := r.defDepth()
+		if r.defX == nil {
+			r.defX, r.defMerge = map[int][]float64{}, map[int][]int{}
+		}
+		r.defX[d], r.defMerge[d], r.merge = nil, nil, 0
+		if d == 1 {
+			r.rowHdr = false
+		}
 	case "cellx":
-		r.cellX = append(r.cellX, float64(param)/twip)
+		if r.defX == nil {
+			r.defX, r.defMerge = map[int][]float64{}, map[int][]int{}
+		}
+		d := r.defDepth()
+		r.defX[d] = append(r.defX[d], float64(param)/twip)
+		r.defMerge[d] = append(r.defMerge[d], r.merge)
+		r.merge = 0
+	case "clmgf":
+		r.merge = 1
+	case "clmrg":
+		r.merge = 2
 	case "trhdr":
 		r.rowHdr = true
 	case "intbl":
-		pp.intbl = true
+		pp.itap = max(pp.itap, 1)
 	case "itap":
-		pp.intbl = param > 0
+		pp.itap = max(0, param)
+	case "deleted":
+		cp.hidden = on // a tracked deletion
 	case "pard":
 		*pp = paraProps{}
 	case "plain":
@@ -671,7 +794,7 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 	case "page":
 		r.flushText()
 		if len(r.runs) > 0 {
-			r.endParagraph(false)
+			r.endParagraph(0)
 		}
 		r.pageBreak = true
 	case "pagebb":
@@ -717,7 +840,7 @@ func (r *rtfReader) word(word string, param int, hasParam bool) {
 	case "ls":
 		pp.ls = param
 	case "ilvl":
-		pp.ilvl = param
+		pp.ilvl, pp.hasIlvl = param, true
 	case "brdrb":
 		pp.borderBottom = true
 	case "f":
@@ -956,6 +1079,7 @@ func (r *rtfReader) endPict() {
 	if img.Format == "" {
 		img.Format = "png"
 	}
+	img.Alt = p.alt
 	if p.goalW > 0 && p.goalH > 0 {
 		img.Width = float64(p.goalW) / twip * float64(max(1, p.scaleX)) / 100
 		img.Height = float64(p.goalH) / twip * float64(max(1, p.scaleY)) / 100
@@ -1013,11 +1137,13 @@ func quoted(s string) string {
 	return ""
 }
 
-// endParagraph ends the current paragraph. In a table cell (\cell) it goes
-// into the cell.
-func (r *rtfReader) endParagraph(cellEnd bool) {
+// endParagraph ends the current paragraph. In a table (\intbl, or ended
+// by \cell at table depth cellDepth) it goes into the cell.
+func (r *rtfReader) endParagraph(cellDepth int) {
 	r.flushText()
 	pp := r.state.para
+	listText := strings.TrimSpace(r.listText.String())
+	r.listText.Reset()
 	if r.wine {
 		pp.left, pp.first = pp.first+pp.left, -pp.left
 	}
@@ -1033,6 +1159,9 @@ func (r *rtfReader) endParagraph(cellEnd bool) {
 	if pp.list != nil {
 		l := *pp.list
 		p.List = &l
+		if pp.hasIlvl {
+			p.List.Level = pp.ilvl
+		}
 	} else if pp.ls > 0 {
 		if levels, ok := r.lists[r.overrides[pp.ls]]; ok {
 			l := &List{Level: pp.ilvl, Ordered: true}
@@ -1050,13 +1179,21 @@ func (r *rtfReader) endParagraph(cellEnd bool) {
 					l.Format = LowerAlpha
 				}
 			}
+			if l.Ordered {
+				if r.useListText {
+					l.Start = parseListNumber(listText, l.Format)
+				}
+				if l.Start == 0 {
+					l.Start = r.nextNumber(r.overrides[pp.ls], pp.ilvl, levels)
+				}
+			}
 			p.List = l
 		} else {
 			p.List = &List{Level: pp.ilvl}
 		}
 	}
 	if p.List != nil {
-		if pp.list != nil {
+		if pp.list != nil && !pp.hasIlvl {
 			p.List.Level = max(0, int(math.Round(pp.left/listStep))-1)
 		}
 		p.LeftIndent, p.FirstIndent = 0, 0
@@ -1073,21 +1210,84 @@ func (r *rtfReader) endParagraph(cellEnd bool) {
 	}
 	r.pageBreak = false
 
-	if pp.intbl || cellEnd {
-		if r.table == nil {
-			r.table = &Table{}
-		}
-		if r.row == nil {
-			r.row = &Row{}
-		}
-		if r.cell == nil {
-			r.cell = &Cell{}
-		}
-		r.cell.Blocks = append(r.cell.Blocks, p)
+	depth := max(pp.itap, cellDepth)
+	if depth == 0 {
+		r.closeTables(0)
+		r.doc.Blocks = append(r.doc.Blocks, p)
 		return
 	}
-	r.endTable()
-	r.doc.Blocks = append(r.doc.Blocks, p)
+	t := r.openTables(depth)
+	t.cell.Blocks = append(t.cell.Blocks, p)
+}
+
+// nextNumber counts an item of a Word list: the lists number on through
+// other paragraphs, from the start of their level.
+func (r *rtfReader) nextNumber(list, level int, levels []listLevel) int {
+	if r.listCount == nil {
+		r.listCount = map[int][]int{}
+	}
+	c := r.listCount[list]
+	for len(c) <= level {
+		c = append(c, 0)
+	}
+	for i := level + 1; i < len(c); i++ {
+		c[i] = 0
+	}
+	if c[level] == 0 {
+		c[level] = 1
+		if level < len(levels) && levels[level].start > 0 {
+			c[level] = levels[level].start
+		}
+	} else {
+		c[level]++
+	}
+	r.listCount[list] = c
+	return c[level]
+}
+
+// parseListNumber reads the number of a list item from its shown text,
+// such as "7." or "(c)"; 0 if there is none.
+func parseListNumber(s string, f NumberFormat) int {
+	s = strings.Trim(s, "().:- \t")
+	if s == "" {
+		return 0
+	}
+	if i := strings.LastIndexByte(s, '.'); i >= 0 { // "1.2." numbers the last level
+		s = s[i+1:]
+	}
+	switch f {
+	case LowerAlpha, UpperAlpha:
+		n := 0
+		for _, c := range strings.ToLower(s) {
+			if c < 'a' || c > 'z' {
+				return 0
+			}
+			n = n*26 + int(c-'a'+1)
+		}
+		return n
+	case LowerRoman, UpperRoman:
+		vals := map[rune]int{'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000}
+		n, prev := 0, 0
+		rs := []rune(strings.ToLower(s))
+		for i := len(rs) - 1; i >= 0; i-- {
+			v := vals[rs[i]]
+			if v == 0 {
+				return 0
+			}
+			if v < prev {
+				n -= v
+			} else {
+				n += v
+				prev = v
+			}
+		}
+		return n
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func hasImage(p *Paragraph) bool {
@@ -1112,52 +1312,162 @@ func isRuleText(s string) bool {
 	return true
 }
 
-func (r *rtfReader) endCell() {
-	if r.row == nil {
-		r.row = &Row{}
+// defDepth is the depth of the table that a row definition (\trowd,
+// \cellx) is for: a nested one in \nesttableprops, else the outer one.
+func (r *rtfReader) defDepth() int {
+	if r.state.nestProps {
+		return max(2, len(r.tables))
 	}
-	if r.cell == nil {
-		r.cell = &Cell{}
-	}
-	// A cell holds at least one paragraph; drop the empty last one that
-	// ends a cell with more paragraphs.
-	r.row.Cells = append(r.row.Cells, *r.cell)
-	r.cell = nil
+	return 1
 }
 
-func (r *rtfReader) endRow() {
+// openTables makes sure tables are open down to depth, closing deeper
+// ones, and returns the one at depth with an open row and cell.
+func (r *rtfReader) openTables(depth int) *rtfTable {
+	r.closeTables(depth)
+	for len(r.tables) < depth {
+		if n := len(r.tables); n > 0 {
+			r.ensureCell(r.tables[n-1])
+		}
+		r.tables = append(r.tables, &rtfTable{t: &Table{}})
+	}
+	t := r.tables[depth-1]
+	r.ensureCell(t)
+	return t
+}
+
+func (r *rtfReader) ensureCell(t *rtfTable) {
+	if t.row == nil {
+		t.row = &Row{}
+	}
+	if t.cell == nil {
+		t.cell = &Cell{}
+	}
+}
+
+// closeTables ends the tables deeper than depth: a nested table goes into
+// the cell around it, an outer one into the document.
+func (r *rtfReader) closeTables(depth int) {
+	for len(r.tables) > depth {
+		n := len(r.tables)
+		t := r.tables[n-1]
+		if t.row != nil && len(t.row.Cells) > 0 {
+			r.endRow(n)
+		}
+		r.tables = r.tables[:n-1]
+		if len(t.t.Rows) == 0 {
+			continue
+		}
+		finishTable(t)
+		if n > 1 {
+			parent := r.tables[n-2]
+			r.ensureCell(parent)
+			parent.cell.Blocks = append(parent.cell.Blocks, t.t)
+		} else {
+			r.doc.Blocks = append(r.doc.Blocks, t.t)
+		}
+	}
+}
+
+func (r *rtfReader) endCell(depth int) {
+	t := r.openTables(depth)
+	t.row.Cells = append(t.row.Cells, *t.cell)
+	t.cell = nil
+}
+
+func (r *rtfReader) endRow(depth int) {
 	r.flushText()
 	if len(r.runs) > 0 {
-		r.endParagraph(true)
-		r.endCell()
+		r.endParagraph(depth)
+		r.endCell(depth)
 	}
-	if r.row == nil {
+	if len(r.tables) < depth {
 		return
 	}
-	if r.table == nil {
-		r.table = &Table{}
+	r.closeTables(depth)
+	t := r.tables[depth-1]
+	if t.row == nil {
+		return
 	}
-	if len(r.table.Rows) == 0 {
-		prev := 0.0
-		for _, x := range r.cellX {
-			r.table.ColWidths = append(r.table.ColWidths, max(1, x-prev))
-			prev = x
-		}
-		r.table.Header = r.rowHdr
+	if t.cell != nil && len(t.cell.Blocks) > 0 { // a cell without \cell
+		t.row.Cells = append(t.row.Cells, *t.cell)
 	}
-	r.table.Rows = append(r.table.Rows, *r.row)
-	r.row = nil
-	r.state.para.intbl = false
+	t.cell = nil
+	if len(t.t.Rows) == 0 && depth == 1 {
+		t.t.Header = r.rowHdr
+	}
+	t.t.Rows = append(t.t.Rows, *t.row)
+	t.xs = append(t.xs, append([]float64(nil), r.defX[depth]...))
+	t.merges = append(t.merges, append([]int(nil), r.defMerge[depth]...))
+	t.row = nil
+	r.state.para.itap = depth - 1
 }
 
-func (r *rtfReader) endTable() {
-	if r.row != nil && len(r.row.Cells) > 0 {
-		r.endRow()
+// finishTable works out the columns of a table from the cell boundaries
+// of its rows: a cell that covers more columns gets a span.
+func finishTable(rt *rtfTable) {
+	t := rt.t
+	for i := range t.Rows {
+		cells, xs, merges := t.Rows[i].Cells, rt.xs[i], rt.merges[i]
+		if len(xs) != len(cells) || len(merges) != len(cells) {
+			continue
+		}
+		// \clmrg cells belong to the cell before them.
+		var outCells []Cell
+		var outX []float64
+		for j, c := range cells {
+			if merges[j] == 2 && len(outCells) > 0 {
+				outX[len(outX)-1] = xs[j]
+				continue
+			}
+			outCells = append(outCells, c)
+			outX = append(outX, xs[j])
+		}
+		t.Rows[i].Cells, rt.xs[i] = outCells, outX
 	}
-	if r.table != nil && len(r.table.Rows) > 0 {
-		r.doc.Blocks = append(r.doc.Blocks, r.table)
+	var bounds []float64
+	for _, xs := range rt.xs {
+		for _, x := range xs {
+			found := false
+			for _, b := range bounds {
+				if math.Abs(b-x) < 1 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				bounds = append(bounds, x)
+			}
+		}
 	}
-	r.table, r.row, r.cell = nil, nil, nil
+	if len(bounds) == 0 {
+		return
+	}
+	sort.Float64s(bounds)
+	prev := 0.0
+	for _, b := range bounds {
+		t.ColWidths = append(t.ColWidths, max(1, b-prev))
+		prev = b
+	}
+	for i := range t.Rows {
+		xs := rt.xs[i]
+		if len(xs) != len(t.Rows[i].Cells) {
+			continue
+		}
+		left := 0.0
+		for j := range t.Rows[i].Cells {
+			span := 0
+			for _, b := range bounds {
+				if b > left+1 && b < xs[j]+1 {
+					span++
+				}
+			}
+			if span > 1 {
+				t.Rows[i].Cells[j].Span = span
+			}
+			left = xs[j]
+		}
+	}
 }
 
 // detectHeadings recognises the headings that this package writes, for

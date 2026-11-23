@@ -68,6 +68,13 @@ type odtReader struct {
 	defaultPara *odtStyle
 	listStyles  map[string]map[int]odtListLevel
 	fonts       map[string]string
+	lists       map[string]*odtCounter // by xml:id, for text:continue-list
+	lastList    *odtCounter
+}
+
+// odtCounter numbers the items of a list and of the lists that continue it.
+type odtCounter struct {
+	n []int // the last number per level
 }
 
 func (r *odtReader) readStyles(sec *node) {
@@ -152,11 +159,22 @@ func (r *odtReader) textProps(n *node) rProps {
 		}
 	}
 	if pos := n.attr("text-position"); pos != "" {
-		f := strings.Fields(pos)
+		// "super", "sub" or the raising in percent, then the size.
+		v := 0.0
+		if f := strings.Fields(pos); len(f) > 0 {
+			switch f[0] {
+			case "super":
+				v = 1
+			case "sub":
+				v = -1
+			default:
+				v, _ = strconv.ParseFloat(strings.TrimSuffix(f[0], "%"), 64)
+			}
+		}
 		switch {
-		case len(f) > 0 && (f[0] == "super" || strings.HasPrefix(f[0], "3") || len(f[0]) > 1 && f[0][0] != '-' && f[0] != "0%"):
+		case v > 0:
 			p.super, p.sub = yes, no
-		case len(f) > 0 && (f[0] == "sub" || strings.HasPrefix(f[0], "-")):
+		case v < 0:
 			p.sub, p.super = yes, no
 		default:
 			p.super, p.sub = no, no
@@ -229,6 +247,9 @@ func (r *odtReader) paraProps(n *node) pProps {
 			m := v / 100
 			p.line = &m
 		}
+	} else if lh != "" && lh != "normal" || n.attr("line-height-at-least") != "" {
+		zero := 0.0 // an exact or minimal height: no multiple
+		p.line = &zero
 	}
 	p.pageBreak = n.attr("break-before") == "page"
 	if b := n.attr("border-bottom"); b != "" && b != "none" {
@@ -297,6 +318,7 @@ type odtCtx struct {
 	firstOfList bool
 	startValue  int // text:start-value of the list item
 	header      bool
+	counter     *odtCounter
 }
 
 func (r *odtReader) blocks(parent *node, ctx odtCtx) []Block {
@@ -315,6 +337,22 @@ func (r *odtReader) blocks(parent *node, ctx odtCtx) []Block {
 				inner.level = ctx.level + 1
 			} else {
 				inner.level = 0
+				// A list continues the numbers of the list it names, or
+				// of the one before it.
+				cnt := &odtCounter{}
+				if id := c.attr("continue-list"); id != "" && r.lists[id] != nil {
+					cnt = r.lists[id]
+				} else if c.attr("continue-numbering") == "true" && r.lastList != nil {
+					cnt = r.lastList
+				}
+				if id := c.attr("id"); id != "" {
+					if r.lists == nil {
+						r.lists = map[string]*odtCounter{}
+					}
+					r.lists[id] = cnt
+				}
+				r.lastList = cnt
+				inner.counter = cnt
 			}
 			inner.inList = true
 			first := c.attr("continue-numbering") != "true" && c.attr("continue-list") == ""
@@ -377,8 +415,6 @@ func (r *odtReader) paragraph(n *node, ctx *odtCtx) *Paragraph {
 	if n.name == "h" {
 		level := atoiDefault(n.attr("outline-level"), 1)
 		para.Heading = min(6, max(1, level))
-	} else if r.styleChain(styleName, func(s string) bool { return s == "title" }) {
-		para.Heading = 1
 	} else if r.styleChain(styleName, func(s string) bool { return s == "quotations" || s == "quote" }) {
 		para.Quote = true
 	} else if r.styleChain(styleName, func(s string) bool {
@@ -393,20 +429,32 @@ func (r *odtReader) paragraph(n *node, ctx *odtCtx) *Paragraph {
 		}
 		if ctx.firstItem {
 			l := &List{Level: ctx.level, Ordered: true}
+			start := 1
 			if lv, ok := r.listStyles[ls][ctx.level]; ok {
 				l.Ordered = !lv.bullet
 				l.Format = lv.format
-				if l.Ordered && ctx.firstOfList {
-					l.Start = lv.start
-				}
-				if l.Ordered && ctx.startValue > 0 {
-					l.Start = ctx.startValue
-				}
+				start = lv.start
 			} else if ls == "" {
 				l.Ordered = false
 			}
-			if ctx.level == 0 && sp.left != nil && *sp.left > listStep*1.5 {
-				l.Level = min(8, int(*sp.left/listStep+0.5)-1) // levels written as indents
+			if cnt := ctx.counter; cnt != nil {
+				for len(cnt.n) <= ctx.level {
+					cnt.n = append(cnt.n, 0)
+				}
+				for i := ctx.level + 1; i < len(cnt.n); i++ {
+					cnt.n[i] = 0
+				}
+				switch {
+				case ctx.startValue > 0:
+					cnt.n[ctx.level] = ctx.startValue
+				case cnt.n[ctx.level] == 0:
+					cnt.n[ctx.level] = start
+				default:
+					cnt.n[ctx.level]++
+				}
+				if l.Ordered {
+					l.Start = cnt.n[ctx.level] // every item gets its number
+				}
 			}
 			para.List = l
 			para.LeftIndent, para.FirstIndent = 0, 0
@@ -416,12 +464,17 @@ func (r *odtReader) paragraph(n *node, ctx *odtCtx) *Paragraph {
 			para.FirstIndent = 0
 		}
 	}
-	if para.Heading > 0 {
-		sr.size = 0
-	}
 	var runs []Run
 	r.inlines(n, sr, "", &runs)
 	para.Runs = runs
+	if para.Heading > 0 {
+		// The heading's look comes back from its level.
+		for i := range para.Runs {
+			if para.Runs[i].Size == HeadingSize(para.Heading) {
+				para.Runs[i].Size = 0
+			}
+		}
+	}
 	if sp.borderBottom && strings.TrimSpace(para.Text()) == "" && !hasImage(para) || isRuleText(para.Text()) {
 		para.Rule, para.Runs, para.Align = true, nil, AlignLeft
 	}
@@ -463,7 +516,8 @@ func (r *odtReader) inlines(n *node, props rProps, link string, runs *[]Run) {
 				*runs = append(*runs, Run{Image: img, Link: link})
 			}
 		case "note", "annotation", "bookmark", "bookmark-start", "bookmark-end", "reference-mark",
-			"soft-page-break", "change", "change-start", "change-end", "sequence-decls":
+			"soft-page-break", "change", "change-start", "change-end", "sequence-decls",
+			"custom-shape", "rect", "ellipse", "line", "polyline", "polygon", "path", "g", "control", "connector":
 			// left out
 		default:
 			r.inlines(c, props, link, runs)
@@ -547,6 +601,7 @@ func (r *odtReader) table(t *node) *Table {
 	collect(t, false)
 	for _, tr := range rows {
 		var row Row
+		spanned := 0 // covered cells still to come of a cell spanning columns
 		for _, tc := range tr.children {
 			switch tc.name {
 			case "table-cell":
@@ -555,6 +610,16 @@ func (r *odtReader) table(t *node) *Table {
 					cell := Cell{Span: atoiDefault(tc.attr("number-columns-spanned"), 1)}
 					cell.Blocks = r.blocks(tc, odtCtx{})
 					row.Cells = append(row.Cells, cell)
+					spanned = max(0, cell.Span-1)
+				}
+			case "covered-table-cell":
+				rep := max(1, atoiDefault(tc.attr("number-columns-repeated"), 1))
+				for i := 0; i < rep && i < 1000; i++ {
+					if spanned > 0 {
+						spanned--
+						continue
+					}
+					row.Cells = append(row.Cells, Cell{}) // covered by the cell above
 				}
 			}
 		}

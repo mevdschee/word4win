@@ -185,16 +185,7 @@ func (d *Document) PlainText() string {
 						if i > 0 {
 							b.WriteString("\t")
 						}
-						var cb strings.Builder
-						for _, cblk := range c.Blocks {
-							if p, ok := cblk.(*Paragraph); ok {
-								if cb.Len() > 0 {
-									cb.WriteString(" ")
-								}
-								cb.WriteString(p.Text())
-							}
-						}
-						b.WriteString(cb.String())
+						b.WriteString(cellText(c.Blocks))
 					}
 					b.WriteString("\n")
 				}
@@ -203,6 +194,25 @@ func (d *Document) PlainText() string {
 	}
 	blocks(d.Blocks)
 	return b.String()
+}
+
+// cellText is the text of the blocks of a table cell on one line: the
+// paragraphs, also those in nested tables, separated by spaces.
+func cellText(blocks []Block) string {
+	var parts []string
+	for _, blk := range blocks {
+		switch v := blk.(type) {
+		case *Paragraph:
+			parts = append(parts, v.Text())
+		case *Table:
+			for _, row := range v.Rows {
+				for _, c := range row.Cells {
+					parts = append(parts, cellText(c.Blocks))
+				}
+			}
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // FromPlainText makes a document of plain text, a paragraph per line.
@@ -385,4 +395,21 @@ func Numbering(blocks []Block) map[*Paragraph]int {
 		}
 	}
 	return nums
+}
+
+// flattenParagraphs collects the paragraphs of blocks, also those of
+// nested tables.
+func flattenParagraphs(blocks []Block, out *[]*Paragraph) {
+	for _, blk := range blocks {
+		switch v := blk.(type) {
+		case *Paragraph:
+			*out = append(*out, v)
+		case *Table:
+			for _, row := range v.Rows {
+				for _, c := range row.Cells {
+					flattenParagraphs(c.Blocks, out)
+				}
+			}
+		}
+	}
 }

@@ -61,9 +61,12 @@ since 24H2; word4win is a small, free replacement.
 - HTML keeps what Markdown keeps, plus fonts, sizes, colours, highlights,
   alignment and indents. Pictures are embedded as data URLs.
 - DOCX and ODT are read with their styles: headings, lists (bullets, numbers,
-  letters and Roman numerals), tables, links, pictures (PNG, JPEG, GIF, BMP),
-  fonts, sizes, colours, highlights, indents and spacing. Headers, footers,
-  footnotes, comments and tracked deletions are left out. Saving goes to RTF,
+  letters and Roman numerals), tables (also nested ones), links, pictures
+  (PNG, JPEG, GIF, BMP), fonts, sizes, colours, highlights, indents and
+  spacing. Headers, footers, footnotes, comments, text boxes and tracked
+  deletions are left out. Where Word and LibreOffice differ (such as the
+  numbering of lists that continue), word4win reads a document as
+  LibreOffice Writer does. Saving goes to RTF,
   Markdown, HTML or text. Old Word documents (.doc) cannot be read.
 - PDF export embeds the fonts (as subsets) and the pictures, and keeps the
   links clickable.
@@ -155,6 +158,14 @@ the formats on any system:
 
     go run ./cmd/word4win-cli in.docx out.md
     go run ./cmd/word4win-cli -scale 80 -paper letter in.md out.pdf
+
+The converters are tested against LibreOffice Writer: `go run
+./tools/genrefdocs` writes test documents in all formats to
+`internal/doc/testdata/writer`, with what Writer makes of each of them
+(`<name>.writer.rtf`). The tests check that word4win reads every document
+as Writer does, and that a document opened (through RTF, as in the editor)
+and saved back to its own format comes back the same. See
+[the README there](internal/doc/testdata/writer/README.md).
 
 The icon is drawn by `internal/icons.AppIcon`; after changing it, run
 `go run ./tools/genicon` to render the PNG files in `winres/`.

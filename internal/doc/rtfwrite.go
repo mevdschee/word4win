@@ -105,23 +105,26 @@ func (w *rtfWriter) blocks(b *bytes.Buffer, blocks []Block) {
 	for _, blk := range blocks {
 		switch v := blk.(type) {
 		case *Paragraph:
-			w.paragraph(b, v, nums[v], false)
+			w.paragraph(b, v, nums[v], 0)
 			b.WriteString(`\par` + "\r\n")
 		case *Table:
-			w.table(b, v)
+			w.table(b, v, 1)
 		}
 	}
 }
 
 // paragraph writes the properties and text of a paragraph, without the
-// \par or \cell that ends it.
-func (w *rtfWriter) paragraph(b *bytes.Buffer, p *Paragraph, number int, inTable bool) {
-	if p.PageBreakBefore && !inTable {
+// \par or \cell that ends it. depth is the table depth: 0 outside tables.
+func (w *rtfWriter) paragraph(b *bytes.Buffer, p *Paragraph, number int, depth int) {
+	if p.PageBreakBefore && depth == 0 {
 		b.WriteString(`\page` + "\r\n")
 	}
 	b.WriteString(`\pard`)
-	if inTable {
+	if depth > 0 {
 		b.WriteString(`\intbl`)
+	}
+	if depth > 1 {
+		fmt.Fprintf(b, `\itap%d`, depth)
 	}
 	left, first := p.LeftIndent, p.FirstIndent
 	before, after := p.SpaceBefore, p.SpaceAfter
@@ -154,6 +157,8 @@ func (w *rtfWriter) paragraph(b *bytes.Buffer, p *Paragraph, number int, inTable
 		} else {
 			fmt.Fprintf(b, `{\pntext\f0 \u8226?\tab}{\*\pn\pnlvlblt\pnf0\pnindent0{\pntxtb\u8226?}}`)
 		}
+		// The level, for when the indent is not the one of the level.
+		fmt.Fprintf(b, `\ilvl%d`, p.List.Level)
 	}
 	switch align {
 	case AlignCenter:
@@ -283,7 +288,11 @@ func (w *rtfWriter) image(b *bytes.Buffer, img *Image) {
 	if width <= 0 || height <= 0 {
 		width, height = float64(cfg.Width)*0.75, float64(cfg.Height)*0.75 // 96 dpi
 	}
-	fmt.Fprintf(b, `{\pict%s\picw%d\pich%d\picwgoal%d\pichgoal%d`+"\r\n", blip, cfg.Width, cfg.Height, twips(width), twips(height))
+	fmt.Fprintf(b, `{\pict`)
+	if img.Alt != "" {
+		fmt.Fprintf(b, `{\*\picprop{\sp{\sn wzDescription}{\sv %s}}}`, escapeText(img.Alt))
+	}
+	fmt.Fprintf(b, `%s\picw%d\pich%d\picwgoal%d\pichgoal%d`+"\r\n", blip, cfg.Width, cfg.Height, twips(width), twips(height))
 	h := hex.EncodeToString(img.Data)
 	for len(h) > 128 {
 		b.WriteString(h[:128])
@@ -294,27 +303,26 @@ func (w *rtfWriter) image(b *bytes.Buffer, img *Image) {
 	b.WriteString("}")
 }
 
-// table writes a table. Cell widths come from the table or are shared out
+// table writes a table at a depth: 1 for a table in the text, 2 and more
+// for a table in a cell. Cell widths come from the table or are shared out
 // over 6.5", the text width of a Letter page with 1" margins.
-func (w *rtfWriter) table(b *bytes.Buffer, t *Table) {
+func (w *rtfWriter) table(b *bytes.Buffer, t *Table, depth int) {
 	cols := t.Columns()
 	if cols == 0 {
 		return
 	}
 	widths := make([]float64, cols)
-	total := 0.0
 	for i := range widths {
 		if i < len(t.ColWidths) && t.ColWidths[i] > 0 {
 			widths[i] = t.ColWidths[i]
 		} else {
 			widths[i] = 468.0 / float64(cols)
 		}
-		total += widths[i]
 	}
 	const border = `\clbrdrt\brdrw10\brdrs\clbrdrl\brdrw10\brdrs\clbrdrb\brdrw10\brdrs\clbrdrr\brdrw10\brdrs`
-	for ri, row := range t.Rows {
+	rowDef := func(ri int, row Row) {
 		b.WriteString(`\trowd\trgaph108\trleft0`)
-		if ri == 0 && t.Header {
+		if ri == 0 && t.Header && depth == 1 {
 			b.WriteString(`\trhdr`)
 		}
 		x, col := 0.0, 0
@@ -326,53 +334,60 @@ func (w *rtfWriter) table(b *bytes.Buffer, t *Table) {
 			b.WriteString(border)
 			fmt.Fprintf(b, `\cellx%d`, twips(x))
 		}
-		b.WriteString("\r\n")
+	}
+	cellEnd, rowEnd := `\cell`, `\row`
+	if depth > 1 {
+		cellEnd, rowEnd = `\nestcell`, `\nestrow`
+	}
+	for ri, row := range t.Rows {
+		if depth == 1 {
+			rowDef(ri, row)
+			b.WriteString("\r\n")
+		}
 		for ci, c := range row.Cells {
 			blocks := c.Blocks
 			if len(blocks) == 0 {
 				blocks = []Block{&Paragraph{}}
 			}
-			var paras []*Paragraph
-			flattenParagraphs(blocks, &paras)
-			for pi, p := range paras {
-				q := *p
-				if ri == 0 && t.Header {
-					runs := make([]Run, len(q.Runs))
-					for k, r := range q.Runs {
-						r.Bold = true
-						runs[k] = r
+			for bi, blk := range blocks {
+				last := bi == len(blocks)-1
+				switch v := blk.(type) {
+				case *Paragraph:
+					q := *v
+					if ri == 0 && t.Header {
+						runs := make([]Run, len(q.Runs))
+						for k, r := range q.Runs {
+							r.Bold = true
+							runs[k] = r
+						}
+						q.Runs = runs
 					}
-					q.Runs = runs
-				}
-				if q.Align == AlignLeft && ci < len(t.Aligns) {
-					q.Align = t.Aligns[ci]
-				}
-				w.paragraph(b, &q, 0, true)
-				if pi < len(paras)-1 {
-					b.WriteString(`\par` + "\r\n")
+					if q.Align == AlignLeft && ci < len(t.Aligns) {
+						q.Align = t.Aligns[ci]
+					}
+					w.paragraph(b, &q, 0, depth)
+					if !last {
+						b.WriteString(`\par` + "\r\n")
+					}
+				case *Table:
+					w.table(b, v, depth+1)
+					if last { // a cell ends with a paragraph
+						w.paragraph(b, &Paragraph{}, 0, depth)
+					}
 				}
 			}
-			b.WriteString(`\cell` + "\r\n")
+			b.WriteString(cellEnd + "\r\n")
 		}
-		b.WriteString(`\row` + "\r\n")
+		if depth > 1 {
+			b.WriteString(`{\*\nesttableprops`)
+			rowDef(ri, row)
+			b.WriteString(rowEnd + `}{\nonesttables\par}` + "\r\n")
+		} else {
+			b.WriteString(rowEnd + "\r\n")
+		}
 	}
-	b.WriteString(`\pard` + "\r\n")
-}
-
-// flattenParagraphs collects the paragraphs of blocks, also those of
-// nested tables.
-func flattenParagraphs(blocks []Block, out *[]*Paragraph) {
-	for _, blk := range blocks {
-		switch v := blk.(type) {
-		case *Paragraph:
-			*out = append(*out, v)
-		case *Table:
-			for _, row := range v.Rows {
-				for _, c := range row.Cells {
-					flattenParagraphs(c.Blocks, out)
-				}
-			}
-		}
+	if depth == 1 {
+		b.WriteString(`\pard` + "\r\n")
 	}
 }
 

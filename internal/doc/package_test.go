@@ -7,7 +7,9 @@ import (
 )
 
 // The DOCX and ODT files in testdata were made by LibreOffice from the RTF
-// that WriteRTF makes of testdata/sample.md.
+// that WriteRTF makes of testdata/sample.md. LibreOffice wrote the nested
+// items as level 0 items with a larger indent, and like Writer they are
+// read as level 0.
 func TestReadPackages(t *testing.T) {
 	for _, name := range []string{"testdata/sample.docx", "testdata/sample.odt"} {
 		data, err := os.ReadFile(name)
@@ -28,9 +30,9 @@ func TestReadPackages(t *testing.T) {
 		got := string(md)
 		for _, want := range []string{
 			"# Title\n", "**bold**", "*italic*", "~~gone~~", "`code`", "](https://example.com",
-			"- one\n", "  - nested\n", "- [x] done\n", "1. first\n", "> A quote\n",
+			"- one\n", "- nested\n", "- [x] done\n", "1. first\n", "> A quote\n",
 			"```\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n", "\n---\n",
-			"| Name | Value |\n| --- | ---: |\n", "![](data:image/png;base64,", "   1. sub a\n",
+			"| Name | Value |\n| --- | ---: |\n", "![](data:image/png;base64,", ". sub a\n",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: missing %q in\n%s", name, want, got)

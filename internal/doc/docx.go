@@ -91,6 +91,7 @@ type pProps struct {
 	outline                 int // 1 to 9, 0 unset
 	numID, ilvl             string
 	pageBreak, borderBottom bool
+	bidi                    tri
 }
 
 func (p pProps) over(base pProps) pProps {
@@ -115,6 +116,7 @@ func (p pProps) over(base pProps) pProps {
 	}
 	out.pageBreak = out.pageBreak || p.pageBreak
 	out.borderBottom = out.borderBottom || p.borderBottom
+	out.bidi = p.bidi.or(base.bidi)
 	return out
 }
 
@@ -142,9 +144,11 @@ type docxReader struct {
 	majorFont    string
 	minorFont    string
 
-	abstract map[string]map[int]numLevel // abstractNumId -> level
-	nums     map[string]string           // numId -> abstractNumId
-	counters map[string][]int            // numId -> the last number per level
+	abstract  map[string]map[int]numLevel // abstractNumId -> level
+	nums      map[string]string           // numId -> abstractNumId
+	overrides map[string]map[int]int      // numId -> level -> start override
+	counters  map[string][]int            // abstractNumId -> the last number per level
+	used      map[string]bool             // numId and level seen
 }
 
 func (r *docxReader) readRels() {
@@ -227,7 +231,9 @@ func (r *docxReader) style(id string) (rProps, pProps, string) {
 func (r *docxReader) readNumbering() {
 	r.abstract = map[string]map[int]numLevel{}
 	r.nums = map[string]string{}
+	r.overrides = map[string]map[int]int{}
 	r.counters = map[string][]int{}
+	r.used = map[string]bool{}
 	root := r.z.xml("word/numbering.xml")
 	for _, a := range root.all("abstractNum") {
 		levels := map[int]numLevel{}
@@ -246,6 +252,14 @@ func (r *docxReader) readNumbering() {
 	for _, n := range root.all("num") {
 		if a := n.child("abstractNumId"); a != nil {
 			r.nums[n.attr("numId")] = a.attr("val")
+		}
+		for _, o := range n.all("lvlOverride") {
+			if so := o.child("startOverride"); so != nil {
+				if r.overrides[n.attr("numId")] == nil {
+					r.overrides[n.attr("numId")] = map[int]int{}
+				}
+				r.overrides[n.attr("numId")][atoiDefault(o.attr("ilvl"), 0)] = atoiDefault(so.attr("val"), 1)
+			}
 		}
 	}
 }
@@ -290,6 +304,15 @@ func (r *docxReader) rProps(n *node) rProps {
 			p.sub, p.super = yes, no
 		default:
 			p.super, p.sub = no, no
+		}
+	}
+	if pos := n.child("position"); pos != nil && n.child("vertAlign") == nil {
+		// Raised or lowered text, which Writer shows as super- and subscript.
+		switch v := atoiDefault(pos.attr("val"), 0); {
+		case v > 0:
+			p.super, p.sub = yes, no
+		case v < 0:
+			p.sub, p.super = yes, no
 		}
 	}
 	if sz := n.child("sz"); sz != nil {
@@ -367,9 +390,12 @@ func (r *docxReader) pProps(n *node) pProps {
 	if sp := n.child("spacing"); sp != nil {
 		p.before = twipsAttr(sp, "before")
 		p.after = twipsAttr(sp, "after")
-		if l := sp.attr("line"); l != "" && (sp.attr("lineRule") == "" || sp.attr("lineRule") == "auto") {
+		if l := sp.attr("line"); l != "" {
 			if v, err := strconv.ParseFloat(l, 64); err == nil {
 				m := v / 240
+				if rule := sp.attr("lineRule"); rule != "" && rule != "auto" {
+					m = 0 // an exact or minimal height: no multiple
+				}
 				p.line = &m
 			}
 		}
@@ -391,6 +417,7 @@ func (r *docxReader) pProps(n *node) pProps {
 		}
 	}
 	p.pageBreak = onOff(n.child("pageBreakBefore")) == yes
+	p.bidi = onOff(n.child("bidi"))
 	if b := n.child("pBdr"); b != nil && b.child("bottom") != nil {
 		p.borderBottom = true
 	}
@@ -449,6 +476,15 @@ func (r *docxReader) paragraphs(p *node) []Block {
 	if pp.align != nil {
 		para.Align = *pp.align
 	}
+	if pp.bidi == yes {
+		// Left and right are the start and end of a right-to-left paragraph.
+		switch para.Align {
+		case AlignLeft:
+			para.Align = AlignRight
+		case AlignRight:
+			para.Align = AlignLeft
+		}
+	}
 	if pp.left != nil {
 		para.LeftIndent = *pp.left
 	}
@@ -475,17 +511,11 @@ func (r *docxReader) paragraphs(p *node) []Block {
 		if lv := atoiDefault(strings.TrimPrefix(lname, "heading "), 0); lv >= 1 && lv <= 6 {
 			para.Heading = lv
 		}
-	case lname == "title":
-		para.Heading = 1
 	case lname == "quote" || lname == "intense quote":
 		para.Quote = true
 	}
 	if pp.numID != "" && pp.numID != "0" {
 		lvl := atoiDefault(pp.ilvl, 0)
-		if lvl == 0 && pp.left != nil && *pp.left > listStep*1.5 {
-			// A list written with indents instead of levels (as converters do).
-			lvl = min(8, int(*pp.left/listStep+0.5)-1)
-		}
 		l := &List{Level: lvl, Ordered: true}
 		lv, ok := r.abstract[r.nums[pp.numID]][atoiDefault(pp.ilvl, 0)]
 		if !ok {
@@ -503,22 +533,29 @@ func (r *docxReader) paragraphs(p *node) []Block {
 		case "upperRoman":
 			l.Format = UpperRoman
 		}
-		// Word numbers the items of a list (a numId) through other
-		// paragraphs; the model restarts after them, so every item gets
-		// its number.
-		counters := r.counters[pp.numID]
+		// The items are numbered through other paragraphs as Writer does:
+		// the lists (numIds) of one abstract numbering count on together,
+		// and a list with a start override starts there when it is first
+		// used. The model restarts after other paragraphs, so every item
+		// gets its number.
+		abs := r.nums[pp.numID]
+		counters := r.counters[abs]
 		for len(counters) <= lvl {
 			counters = append(counters, 0)
 		}
 		for i := lvl + 1; i < len(counters); i++ {
 			counters[i] = 0
 		}
-		if counters[lvl] == 0 {
+		key := pp.numID + ":" + strconv.Itoa(lvl)
+		if start, ok := r.overrides[pp.numID][lvl]; ok && !r.used[key] {
+			counters[lvl] = start
+		} else if counters[lvl] == 0 {
 			counters[lvl] = lv.start
 		} else {
 			counters[lvl]++
 		}
-		r.counters[pp.numID] = counters
+		r.used[key] = true
+		r.counters[abs] = counters
 		if l.Ordered {
 			l.Start = counters[lvl]
 		}
@@ -532,7 +569,7 @@ func (r *docxReader) paragraphs(p *node) []Block {
 	if para.Heading > 0 {
 		// The heading style's look comes back from the heading level.
 		for i := range para.Runs {
-			if para.Runs[i].Size == HeadingSize(para.Heading) || base.size == para.Runs[i].Size {
+			if para.Runs[i].Size == HeadingSize(para.Heading) {
 				para.Runs[i].Size = 0
 			}
 		}
@@ -619,9 +656,6 @@ func (r *docxReader) run(rn *node, base rProps, in *docxInline) {
 		if len(in.fieldLink) > 0 && in.inResult[len(in.inResult)-1] && in.fieldLink[len(in.fieldLink)-1] != "" {
 			run.Link = in.fieldLink[len(in.fieldLink)-1]
 		}
-		if run.Link != "" && run.Color != nil && *run.Color == (Color{0x05, 0x63, 0xC1}) {
-			run.Color = nil
-		}
 		if run.Font == r.minorFont && r.minorFont == DefaultFont {
 			run.Font = ""
 		}
@@ -657,15 +691,15 @@ func (r *docxReader) run(rn *node, base rProps, in *docxInline) {
 		case "noBreakHyphen":
 			add("‑")
 		case "sym":
+			// A character of a symbol font, which has its glyphs in the
+			// private use area: kept as it is, in that font.
 			if v, err := strconv.ParseUint(c.attr("char"), 16, 32); err == nil {
-				ch := rune(v)
-				if ch >= 0xF000 && ch <= 0xF0FF { // symbol fonts use the private area
-					ch -= 0xF000
-					if ch == 0xB7 {
-						ch = '•'
-					}
+				old := props.font
+				if f := c.attr("font"); f != "" {
+					props.font = f
 				}
-				add(string(ch))
+				add(string(rune(v)))
+				props.font = old
 			}
 		case "fldChar":
 			switch c.attr("fldCharType") {

@@ -1,0 +1,5 @@
+Plain text reference
+
+Only ASCII here, so every encoding reads it the same.
+Tab	separated	columns
+Last line

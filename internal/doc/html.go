@@ -56,7 +56,8 @@ type htmlCtx struct {
 	pre     bool
 	align   Align
 	heading int
-	list    *List // the list of the item being read
+	list    *List   // the list of the item being read
+	indent  float64 // margin-left of the paragraphs, in points
 	inItem  bool
 	level   int // list nesting, when inList
 	inList  bool
@@ -87,7 +88,7 @@ func (h *htmlReader) para(ctx htmlCtx) *Paragraph {
 	if h.cur != nil {
 		return h.cur
 	}
-	p := &Paragraph{Align: ctx.align, Quote: ctx.quote, Code: ctx.pre, Heading: ctx.heading}
+	p := &Paragraph{Align: ctx.align, Quote: ctx.quote, Code: ctx.pre, Heading: ctx.heading, LeftIndent: ctx.indent}
 	if !ctx.pre && ctx.heading == 0 && !ctx.inList {
 		p.SpaceAfter = paraSpace
 	}
@@ -270,6 +271,24 @@ func alignOf(n *xhtml.Node, css map[string]string, def Align) Align {
 	return def
 }
 
+// marginLeft is the left indent of a block with a margin-left. In a
+// blockquote the margin comes on top of the quote's own indent (see
+// WriteHTML).
+func marginLeft(css map[string]string, ctx htmlCtx) float64 {
+	v, ok := css["margin-left"]
+	if !ok {
+		return ctx.indent
+	}
+	m, ok := parseLength(v)
+	if !ok || strings.HasSuffix(v, "%") || m <= 0 {
+		return ctx.indent
+	}
+	if ctx.quote && ctx.indent == 0 {
+		return listStep/2 + m
+	}
+	return ctx.indent + m
+}
+
 func (h *htmlReader) block(n *xhtml.Node, ctx htmlCtx) {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		h.node(c, ctx)
@@ -308,6 +327,7 @@ func (h *htmlReader) node(n *xhtml.Node, ctx htmlCtx) {
 		if n.DataAtom == atom.Center {
 			inner.align = AlignCenter
 		}
+		inner.indent = marginLeft(css, ctx)
 		h.block(n, inner)
 		h.flush()
 	case atom.Br:
@@ -321,6 +341,7 @@ func (h *htmlReader) node(n *xhtml.Node, ctx htmlCtx) {
 	case atom.Blockquote:
 		h.flush()
 		inner.quote = true
+		inner.indent = marginLeft(css, ctx)
 		h.block(n, inner)
 		h.flush()
 	case atom.Pre:
@@ -541,7 +562,11 @@ func (h *htmlReader) table(n *xhtml.Node, ctx htmlCtx) {
 				allTh = false
 			}
 			var blocks []Block
-			cctx := htmlCtx{out: &blocks, run: ctx.run, align: alignOf(c, styleProps(attr(c, "style")), AlignLeft)}
+			def := AlignLeft
+			if c.DataAtom == atom.Th {
+				def = AlignCenter // as browsers show a header cell
+			}
+			cctx := htmlCtx{out: &blocks, run: ctx.run, align: alignOf(c, styleProps(attr(c, "style")), def)}
 			h.block(c, cctx)
 			h.flush()
 			for _, b := range blocks {
@@ -608,9 +633,10 @@ hr { border: 0; border-top: 0.75pt solid #a0a0a0; margin: 6pt 0; }
 }
 
 type htmlWriter struct {
-	b    bytes.Buffer
-	save ImageSaver
-	err  error
+	b       bytes.Buffer
+	save    ImageSaver
+	err     error
+	inQuote bool // in a blockquote, which indents by listStep/2
 }
 
 func (w *htmlWriter) blocks(blocks []Block) {
@@ -637,6 +663,7 @@ func (w *htmlWriter) blocks(blocks []Block) {
 				w.b.WriteString("</code></pre>\n")
 			case isQuotePara(v):
 				w.b.WriteString("<blockquote>\n")
+				w.inQuote = true
 				for ; i < len(blocks); i++ {
 					p, ok := blocks[i].(*Paragraph)
 					if !ok || !isQuotePara(p) || p.List != nil || isCodePara(p) {
@@ -644,6 +671,7 @@ func (w *htmlWriter) blocks(blocks []Block) {
 					}
 					w.paragraph(p, "p")
 				}
+				w.inQuote = false
 				i--
 				w.b.WriteString("</blockquote>\n")
 			default:
@@ -726,8 +754,12 @@ func (w *htmlWriter) paragraph(p *Paragraph, force string) {
 	case AlignJustify:
 		style = append(style, "text-align: justify")
 	}
-	if p.LeftIndent > 0 && !p.Quote && p.List == nil {
-		style = append(style, fmt.Sprintf("margin-left: %gpt", round1(p.LeftIndent)))
+	indent := p.LeftIndent
+	if w.inQuote {
+		indent -= listStep / 2 // what the blockquote does not indent
+	}
+	if indent >= 0.5 && p.List == nil {
+		style = append(style, fmt.Sprintf("margin-left: %gpt", round1(indent)))
 	}
 	if p.FirstIndent != 0 && p.List == nil {
 		style = append(style, fmt.Sprintf("text-indent: %gpt", round1(p.FirstIndent)))
@@ -854,26 +886,38 @@ func (w *htmlWriter) table(t *Table) {
 			if ci < len(t.Aligns) {
 				align = t.Aligns[ci]
 			}
-			var paras []*Paragraph
-			flattenParagraphs(c.Blocks, &paras)
-			if len(paras) > 0 && paras[0].Align != AlignLeft {
-				align = paras[0].Align
+			if len(c.Blocks) > 0 {
+				if p, ok := c.Blocks[0].(*Paragraph); ok && p.Align != AlignLeft {
+					align = p.Align
+				}
 			}
-			if align == AlignCenter {
+			switch {
+			case align == AlignCenter:
 				w.b.WriteString(` style="text-align: center"`)
-			} else if align == AlignRight {
+			case align == AlignRight:
 				w.b.WriteString(` style="text-align: right"`)
+			case header: // a header cell is centred by default
+				w.b.WriteString(` style="text-align: left"`)
 			}
 			w.b.WriteString(">")
-			for pi, p := range paras {
-				if pi > 0 {
-					w.b.WriteString("<br>")
+			prevPara := false
+			for _, blk := range c.Blocks {
+				switch v := blk.(type) {
+				case *Paragraph:
+					if prevPara {
+						w.b.WriteString("<br>")
+					}
+					runs := v.Runs
+					if header {
+						runs = stripBold(runs)
+					}
+					w.inline(runs)
+					prevPara = true
+				case *Table:
+					w.b.WriteString("\n")
+					w.table(v)
+					prevPara = false
 				}
-				runs := p.Runs
-				if header {
-					runs = stripBold(runs)
-				}
-				w.inline(runs)
 			}
 			w.b.WriteString("</" + tag + ">")
 		}

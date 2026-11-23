@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>HTML reference</title></head>
+<body>
+<h1>HTML reference</h1>
+<p>Plain, <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, <u>underline</u>, <s>strike</s>,
+<code>code</code>, x<sup>2</sup>, H<sub>2</sub>O and a <a href="https://example.com/">link</a>.</p>
+<p>Deleted text: <del>del</del>.</p>
+<p>Line one<br>line two after a br.</p>
+<h2>Fonts and colours</h2>
+<p><span style="font-family: 'Times New Roman', serif">Times New Roman</span>,
+<span style="font-family: Arial, sans-serif">Arial</span>,
+<span style="font-family: monospace">monospace</span>,
+<font face="Georgia" size="5">font tag size 5</font>,
+<span style="font-size: 8pt">8pt</span>, <span style="font-size: 24px">24px</span>, <span style="font-size: 2em">2em</span>.</p>
+<p><span style="color: red">red</span>, <span style="color: #00B050">#00B050</span>, <span style="color: rgb(0, 112, 192)">rgb()</span>,
+<font color="purple">font color</font>, <span style="background-color: yellow">yellow background</span>,
+<span style="background: cyan">cyan background</span>,
+<span style="font-weight: bold; font-style: italic; text-decoration: underline line-through">all styles in CSS</span>.</p>
+<p>Raised in CSS: <span style="vertical-align: super">super</span> and <span style="vertical-align: sub">sub</span>.</p>
+<h2>Paragraphs</h2>
+<p style="text-align: left">Left aligned.</p>
+<p style="text-align: center">Centred.</p>
+<p align="right">Right aligned with the align attribute.</p>
+<p style="text-align: justify">Justified. The editor wraps this paragraph over several lines so that the alignment is visible: the quick brown fox jumps over the lazy dog, and the lazy dog does not seem to mind at all.</p>
+<p style="margin-left: 40px">Indented 40px.</p>
+<div>A div instead of a p.</div>
+<blockquote>A blockquote.</blockquote>
+<pre>preformatted
+	with a tab
+    and spaces</pre>
+<h2>Lists</h2>
+<ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>
+<ol><li>first</li><li>second<ol type="a"><li>letter</li></ol></li></ol>
+<ol start="5" style="list-style-type: upper-roman"><li>five in Roman</li><li>six</li></ol>
+<ol type="A"><li>upper letter</li></ol>
+<h2>Table</h2>
+<table border="1">
+<tr><th>Name</th><th style="text-align: right">Value</th></tr>
+<tr><td>a</td><td style="text-align: right">1</td></tr>
+<tr><td colspan="2" style="text-align: center">two columns</td></tr>
+</table>
+<h2>Pictures</h2>
+<p>Embedded: <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABACAIAAABqVuVZAAABcElEQVR4nOzT623DIBSGYYi6VzpSM0k6UjMZVRpTI8vB5nou3zlIxrL59ejl4myyY0AHQB9/TxdCeG7O+dsj/oKf78+1oH+XcL+G+zUesSuWXDF/e6RM8bMBRSBLaTelLZCltElpB8hSSlN6C2QpvVLKAYGn9ErpGAg8pVNAyCkVAGGmVAYEmFINEFRKlUA4KTUBIaTUCqQ+pT5AilPqBqQ1pc5A+lLqD6QspVFAalIaCKQjpeFA0lOaASQ6pXlAQlOaCiQxJQIgWSnRAAlKiRJIRErEQPxTYgHEOSUuQGxT4gXEMCV2QNxSYgrEJyW+QExS4g5EnpIAINqUxABRpSQJiCQleUCTUxIJNDMlwUBzUpINNCElDUBDU1ICNC4lVUAjUtIG1D0lnUAdU1IL1Csl5UDtKekHakwJBag6JSCgupTggEpTQgQqSgkX6GRK0EBnUgIHegLlU/LL/vWzvGCvVMf7iGOTmYthrBh763cAFJENjyNBVhMAAAAASUVORK5CYII=" alt="embedded" width="96" height="64">, linked: <img src="picture.png" alt="linked">.</p>
+<p>Scaled by its width only: <img src="picture.png" width="48"></p>
+<hr>
+<h3>Heading 3</h3><h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6>
+<p>Entities: &amp; &lt; &gt; &nbsp;non-breaking &euro; &copy; &#8212; &#x1F600;. Unicode: café, αβγ, 漢字.</p>
+</body>
+</html>

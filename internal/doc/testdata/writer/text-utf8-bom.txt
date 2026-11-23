@@ -1,0 +1,11 @@
+﻿Plain text reference
+
+Accents: café, naïve, Ærøskøbing, Straße, señor.
+Symbols: € £ © ® ™ ° ± × ÷ “quotes” ‘single’ – en — em …
+Greek: αβγ, Cyrillic: жзи, CJK: 漢字, emoji: 😀
+Tab	separated	columns
+	Indented with a tab
+    Indented with four spaces
+
+A long line that goes on and on so that it has to be wrapped by the editor when word wrap is on, and that stays one line when word wrap is off, to see how the window and the saved file treat it.
+Last line without a line end

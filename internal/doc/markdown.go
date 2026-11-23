@@ -15,6 +15,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 // ---- reading ----
@@ -222,6 +223,18 @@ func (m *mdReader) table(t *east.Table, ctx mdContext) {
 
 var htmlTag = regexp.MustCompile(`^<(/?)([a-zA-Z]+)\s*/?>$`)
 
+// mdText is the text of a text node, with the backslash escapes and the
+// entity and character references resolved, as goldmark renders it.
+func mdText(t *ast.Text, src []byte) string {
+	v := t.Segment.Value(src)
+	if t.IsRaw() {
+		return string(v)
+	}
+	v = util.UnescapePunctuations(v)
+	v = util.ResolveNumericReferences(v)
+	return string(util.ResolveEntityNames(v))
+}
+
 // inlines converts the inline children of a node to runs, starting from
 // the style of base.
 func (m *mdReader) inlines(n ast.Node, base Run) []Run {
@@ -233,7 +246,7 @@ func (m *mdReader) inlines(n ast.Node, base Run) []Run {
 			switch v := c.(type) {
 			case *ast.Text:
 				r := st
-				r.Text = string(v.Segment.Value(m.src))
+				r.Text = mdText(v, m.src)
 				runs = append(runs, r)
 				if v.HardLineBreak() {
 					r.Text = "\n"
