@@ -579,7 +579,7 @@ func showAbout(a *App) {
 	}
 	title := text(appName, 20, 34)
 	text(ver, 58, 20)
-	text("A WordPad for Windows that also reads and writes Markdown and HTML.", 86, 20)
+	text("A WordPad for Windows that supports Markdown.", 86, 20)
 	text(fmt.Sprintf("© %d %s", max(time.Now().Year(), 2026), author), 114, 20)
 	text("Released under the MIT License.", 136, 20)
 
