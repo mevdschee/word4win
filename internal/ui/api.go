@@ -99,6 +99,7 @@ var (
 	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
 	procDeleteDC               = gdi32.NewProc("DeleteDC")
+	procResetDCW               = gdi32.NewProc("ResetDCW")
 	procBitBlt                 = gdi32.NewProc("BitBlt")
 	procSetTextColor           = gdi32.NewProc("SetTextColor")
 	procSetBkColor             = gdi32.NewProc("SetBkColor")

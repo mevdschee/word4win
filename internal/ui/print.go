@@ -159,6 +159,79 @@ func atoi(s string) int {
 	return n
 }
 
+// DEVMODEW: the offsets of fields after the 32 character device name.
+const (
+	devModeFields      = 72 // dmFields
+	devModeOrientation = 76 // dmOrientation
+	dmOrientationField = 0x1
+	dmorientPortrait   = 1
+	dmorientLandscape  = 2
+)
+
+// lockDevMode locks a DEVMODE handle and returns its memory; nil if there
+// is none. GlobalUnlock ends it.
+func lockDevMode(h uintptr) unsafe.Pointer {
+	if h == 0 {
+		return nil
+	}
+	p, _, _ := procGlobalLock.Call(h)
+	return *(*unsafe.Pointer)(unsafe.Pointer(&p))
+}
+
+// devModeLandscape reads the orientation of printer settings; ok is false
+// when they have none.
+func devModeLandscape(h uintptr) (landscape, ok bool) {
+	p := lockDevMode(h)
+	if p == nil {
+		return false, false
+	}
+	defer procGlobalUnlock.Call(h)
+	if *(*uint32)(unsafe.Add(p, devModeFields))&dmOrientationField == 0 {
+		return false, false
+	}
+	return *(*int16)(unsafe.Add(p, devModeOrientation)) == dmorientLandscape, true
+}
+
+// setDevModeLandscape sets the orientation of printer settings.
+func setDevModeLandscape(h uintptr, landscape bool) {
+	p := lockDevMode(h)
+	if p == nil {
+		return
+	}
+	defer procGlobalUnlock.Call(h)
+	*(*uint32)(unsafe.Add(p, devModeFields)) |= dmOrientationField
+	o := int16(dmorientPortrait)
+	if landscape {
+		o = dmorientLandscape
+	}
+	*(*int16)(unsafe.Add(p, devModeOrientation)) = o
+}
+
+// landscape tells whether the page setup is landscape.
+func (a *App) landscape() bool {
+	return a.cfg.PaperWidth > a.cfg.PaperHeight
+}
+
+// syncPrinter gives the printer settings, which the dialogs and printing
+// use, the orientation of the page setup. Without settings of this session
+// (after a restart) it takes those of the default printer: their own
+// orientation would show portrait in the dialogs and print a landscape
+// page on portrait paper.
+func (a *App) syncPrinter() {
+	if a.cfg.PaperWidth <= 0 || a.cfg.PaperHeight <= 0 {
+		return // the paper follows Windows
+	}
+	if a.print.devMode == 0 {
+		psd := pageSetupDlg{owner: uintptr(a.wnd.Hwnd()), flags: 0x0400} // PSD_RETURNDEFAULT
+		psd.size = uint32(unsafe.Sizeof(psd))
+		if r, _, _ := procPageSetupDlgW.Call(uintptr(unsafe.Pointer(&psd))); r == 0 {
+			return
+		}
+		a.print.devMode, a.print.devNames = psd.devMode, psd.devNames
+	}
+	setDevModeLandscape(a.print.devMode, a.landscape())
+}
+
 func (a *App) pageSetup() {
 	// Margins in thousandths of an inch or hundredths of a millimetre,
 	// as the locale measures.
@@ -179,6 +252,7 @@ func (a *App) pageSetup() {
 	if metric {
 		unitsFlag = 0x0008 // PSD_INHUNDREDTHSOFMILLIMETERS
 	}
+	a.syncPrinter()
 	psd := pageSetupDlg{
 		owner: uintptr(a.wnd.Hwnd()), devMode: a.print.devMode, devNames: a.print.devNames,
 		flags: 0x0002 | unitsFlag | 0x2000, // PSD_MARGINS | units | PSD_ENABLEPAGESETUPHOOK
@@ -198,7 +272,13 @@ func (a *App) pageSetup() {
 	a.cfg.MarginLeft, a.cfg.MarginTop = fromDlg(psd.margin.Left), fromDlg(psd.margin.Top)
 	a.cfg.MarginRight, a.cfg.MarginBottom = fromDlg(psd.margin.Right), fromDlg(psd.margin.Bottom)
 	if psd.paperSize.X > 0 && psd.paperSize.Y > 0 {
-		a.cfg.PaperWidth, a.cfg.PaperHeight = fromDlg(psd.paperSize.X), fromDlg(psd.paperSize.Y)
+		// The orientation chosen is that of the printer settings; the
+		// paper size does not follow it with every printer driver.
+		w, h := fromDlg(psd.paperSize.X), fromDlg(psd.paperSize.Y)
+		if landscape, ok := devModeLandscape(psd.devMode); ok && landscape != (w > h) {
+			w, h = h, w
+		}
+		a.cfg.PaperWidth, a.cfg.PaperHeight = w, h
 	}
 	a.saveSettings()
 	a.applyWrap()
@@ -207,6 +287,7 @@ func (a *App) pageSetup() {
 
 func (a *App) printDialog() {
 	pages := layout.Layout(a.model(), a.layoutSettings())
+	a.syncPrinter()
 	pd := printDlg{
 		owner: uintptr(a.wnd.Hwnd()), devMode: a.print.devMode, devNames: a.print.devNames,
 		flags:   0x0100 | 0x0004 | 0x00040000, // PD_RETURNDC | PD_NOSELECTION | PD_USEDEVMODECOPIESANDCOLLATE
@@ -230,14 +311,19 @@ func (a *App) printDialog() {
 
 // printNow prints on the default printer without asking.
 func (a *App) printNow() {
-	pd := printDlg{owner: uintptr(a.wnd.Hwnd()), devMode: a.print.devMode, devNames: a.print.devNames, flags: 0x0100 | 0x0400} // PD_RETURNDC | PD_RETURNDEFAULT
-	if a.print.devNames != 0 {
-		pd.flags = 0x0100 | 0x0400
-	}
+	// PD_RETURNDEFAULT takes no printer settings: it returns those of the
+	// default printer.
+	pd := printDlg{owner: uintptr(a.wnd.Hwnd()), flags: 0x0100 | 0x0400} // PD_RETURNDC | PD_RETURNDEFAULT
 	pd.size = uint32(unsafe.Sizeof(pd))
 	if r, _, _ := procPrintDlgW.Call(uintptr(unsafe.Pointer(&pd))); r == 0 || pd.hdc == 0 {
 		a.wnd.Hwnd().MessageBox("Cannot print: there is no default printer.", appName, co.MB_ICONEXCLAMATION)
 		return
+	}
+	if a.print.devMode == 0 {
+		a.print.devMode, a.print.devNames = pd.devMode, pd.devNames
+	} else {
+		procGlobalFree.Call(pd.devMode)
+		procGlobalFree.Call(pd.devNames)
 	}
 	pages := layout.Layout(a.model(), a.layoutSettings())
 	a.printPages(pd.hdc, pages, 1, len(pages))
@@ -250,6 +336,16 @@ func (a *App) printPages(hdc uintptr, pages []*layout.Page, from, to int) {
 	defer procDeleteDC.Call(hdc)
 	restore := waitCursor()
 	defer restore()
+	// Print in the orientation of the pages, whatever the printer's is.
+	if len(pages) > 0 && a.cfg.PaperWidth > 0 && a.print.devMode != 0 {
+		setDevModeLandscape(a.print.devMode, pages[0].Width > pages[0].Height)
+		if p := lockDevMode(a.print.devMode); p != nil {
+			if r, _, _ := procResetDCW.Call(hdc, uintptr(p)); r != 0 {
+				hdc = r
+			}
+			procGlobalUnlock.Call(a.print.devMode)
+		}
+	}
 	devCap := func(i uintptr) float64 {
 		r, _, _ := procGetDeviceCaps.Call(hdc, i)
 		return float64(int32(r))
