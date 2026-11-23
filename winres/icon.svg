@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    The word4win icon: a flat take on the WordPad icon of Windows 7, drawn
+    from scratch. A light blue page with a dark blue band at the top, blue
+    lines of text and a big dark blue W, a nod to Word, where WordPad has an
+    orange A. No backdrop. Everything sits on a 16 unit grid, so it stays
+    readable at 16 px (one grid unit is one pixel there). Rendered to PNG by
+    tools/genicon.
+  -->
+
+  <!-- page and band -->
+  <rect x="32" y="16" width="192" height="224" rx="16" fill="#CFE9FB"/>
+  <path d="M48,16 H208 Q224,16 224,32 V64 H32 V32 Q32,16 48,16 Z" fill="#2F6CB0"/>
+
+  <!-- W -->
+  <polyline points="56,88 76,152 96,104 116,152 136,88" fill="none"
+    stroke="#0B4F9E" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- lines of text -->
+  <rect x="160" y="80" width="48" height="16" rx="8" fill="#3FA3EA"/>
+  <rect x="160" y="112" width="48" height="16" rx="8" fill="#3FA3EA"/>
+  <rect x="160" y="144" width="48" height="16" rx="8" fill="#3FA3EA"/>
+  <rect x="48" y="176" width="160" height="16" rx="8" fill="#3FA3EA"/>
+  <rect x="48" y="208" width="112" height="16" rx="8" fill="#3FA3EA"/>
+</svg>

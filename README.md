@@ -167,8 +167,8 @@ as Writer does, and that a document opened (through RTF, as in the editor)
 and saved back to its own format comes back the same. See
 [the README there](internal/doc/testdata/writer/README.md).
 
-The icon is drawn by `internal/icons.AppIcon`; after changing it, run
-`go run ./tools/genicon` to render the PNG files in `winres/`.
+The icon is `winres/icon.svg`; after changing it, run `go run ./tools/genicon`
+(needs Inkscape) to render the PNG files in `winres/`.
 
 ## Release
 
@@ -199,7 +199,7 @@ needs the GitHub CLI (`gh`). The installer is defined in
   printing and drawing pages, `preview.go` the print preview, `dialogs.go`
   Find, Font, Paragraph, Date and time, Link and About, `theme.go` light and
   dark.
-- `internal/icons`: the Fluent UI System Icons (MIT) and the app icon.
+- `internal/icons`: the Fluent UI System Icons (MIT).
 - `internal/config`, `internal/update`: settings and the update check.
 
 ## License

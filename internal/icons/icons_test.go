@@ -28,13 +28,3 @@ func TestAllIconsRender(t *testing.T) {
 		}
 	}
 }
-
-func TestAppIcon(t *testing.T) {
-	img := AppIcon(48)
-	if c := img.RGBAAt(24, 2); c != Background {
-		t.Fatalf("edge colour %v", c)
-	}
-	if c := img.RGBAAt(0, 0); c.A != 0 {
-		t.Fatalf("corner is not transparent: %v", c)
-	}
-}
