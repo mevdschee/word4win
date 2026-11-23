@@ -548,6 +548,17 @@ func (a *App) textWidthTwips() int {
 func (a *App) applyWrap() {
 	a.re.SetMargins(editorMargin(), editorMargin())
 	a.re.SetWrap(a.cfg.Wrap, a.textWidthTwips())
+	// RichEdit keeps its horizontal scroll bar enabled when the text fits:
+	// hide it when the lines are not wider than the window.
+	show := true
+	switch a.cfg.Wrap {
+	case config.WrapWindow:
+		show = false
+	case config.WrapRuler:
+		rc, _ := a.re.Hwnd().GetClientRect()
+		show = mulDiv(a.textWidthTwips(), screenDpi(), 1440)+2*editorMargin() > int(rc.Right)
+	}
+	a.re.ShowHScroll(show)
 }
 
 // updateRuler gives the ruler the text area and the current paragraph.

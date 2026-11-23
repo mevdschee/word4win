@@ -421,6 +421,22 @@ func (p *preview) updateScroll() {
 	if p.canvas == nil || len(p.pages) == 0 {
 		return
 	}
+	// Showing or hiding a scroll bar changes the client area, and with it
+	// the zoom of the whole page and whether the other bar is needed: set
+	// them until the area stays the same.
+	for i := 0; i < 4; i++ {
+		before, _ := p.canvas.Hwnd().GetClientRect()
+		p.setScrollBars()
+		if after, _ := p.canvas.Hwnd().GetClientRect(); after == before {
+			break
+		}
+	}
+	invalidate(p.canvas.Hwnd())
+	invalidate(p.bar.Hwnd())
+}
+
+// setScrollBars sets the scroll bars for the content and the client area.
+func (p *preview) setScrollBars() {
 	last := len(p.pages) - 1
 	pos, sz := p.pagePos(last)
 	p.contentH = pos.Y + sz.Cy + px(pageGap)
@@ -445,8 +461,6 @@ func (p *preview) updateScroll() {
 	p.scroll.Y = max(0, min(p.scroll.Y, p.contentH-rc.Bottom))
 	set(0, p.contentW, rc.Right, p.scroll.X)
 	set(1, p.contentH, rc.Bottom, p.scroll.Y)
-	invalidate(p.canvas.Hwnd())
-	invalidate(p.bar.Hwnd())
 }
 
 func (p *preview) scrollTo(x, y int32) {

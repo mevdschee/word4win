@@ -43,6 +43,7 @@ const (
 	emSetEventMask    = wmUser + 69
 	emSetParaFormat   = wmUser + 71
 	emSetTargetDevice = wmUser + 72
+	emShowScrollBar   = wmUser + 96
 	emStreamIn        = wmUser + 73
 	emStreamOut       = wmUser + 74
 	emGetTextRange    = wmUser + 75
@@ -219,8 +220,9 @@ type charRange struct{ Min, Max int32 }
 
 // RichEdit wraps the control.
 type RichEdit struct {
-	hwnd win.HWND
-	id   uint16
+	hwnd   win.HWND
+	id     uint16
+	noHBar bool // the horizontal scroll bar is hidden by ShowHScroll
 }
 
 var loadMsftedit sync.Once
@@ -469,6 +471,20 @@ func (re *RichEdit) SetWrap(mode int, widthTwips int) {
 		}
 		re.send(emSetTargetDevice, targetDC, uintptr(widthTwips))
 	}
+}
+
+// ShowHScroll lets RichEdit show the horizontal scroll bar when the text
+// is wider than the window (true), or hides it (false), scrolled back to
+// the left.
+func (re *RichEdit) ShowHScroll(show bool) {
+	if show == !re.noHBar {
+		return
+	}
+	if !show {
+		re.send(0x0114, 6, 0) // WM_HSCROLL, SB_LEFT
+	}
+	re.send(emShowScrollBar, 0, boolArg(show)) // SB_HORZ
+	re.noHBar = !show
 }
 
 // Find searches text from a position; it returns the match or -1.
