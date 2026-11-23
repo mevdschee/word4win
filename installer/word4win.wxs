@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI definition, built with wixl (msitools) by release.sh:
+  wixl -a x64 -D Version=x.y.z -D FileVersion=x.y.z.b -D ExePath=... -D IconPath=... -o out.msi word4win.wxs
+  It installs per user, without admin rights, into %LOCALAPPDATA%\Programs\word4win.
+  The UpgradeCode must never change, so new versions replace old ones.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="word4win" Language="1033" Version="$(var.Version)"
+           Manufacturer="Maurits van der Schee" UpgradeCode="CDAAB26C-69D7-4C0C-997E-83D365C599EA">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Description="word4win $(var.Version)" Comments="A WordPad for Windows with Markdown, HTML and PDF"/>
+    <Media Id="1" Cabinet="word4win.cab" EmbedCab="yes"/>
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of word4win is already installed."/>
+
+    <Icon Id="word4win.ico" SourceFile="$(var.IconPath)"/>
+    <Property Id="ARPPRODUCTICON" Value="word4win.ico"/>
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/mevdschee/word4win"/>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLDIR" Name="word4win">
+            <!-- Per-user components need a registry key path, not the file. -->
+            <Component Id="MainExecutable" Guid="*" Win64="yes">
+              <!-- The version must be set: an unversioned file never replaces
+                   the versioned exe of the old install during an upgrade, and
+                   removing the old version then deletes it. -->
+              <File Id="word4win.exe" Name="word4win.exe" Source="$(var.ExePath)"
+                    DefaultVersion="$(var.FileVersion)"/>
+              <RemoveFolder Id="RemoveInstallDir" On="uninstall"/>
+              <RegistryValue Root="HKCU" Key="Software\word4win" Name="exe"
+                             Type="integer" Value="1" KeyPath="yes"/>
+            </Component>
+            <!-- "Open with" in Explorer offers word4win for documents, and
+                 "word4win" works in the Run box. Nothing is taken over: .rtf,
+                 .md and the other types keep the program they had. -->
+            <Component Id="OpenWith" Guid="*" Win64="yes">
+              <RegistryValue Root="HKCU" Key="Software\word4win" Name="openwith"
+                             Type="integer" Value="1" KeyPath="yes"/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe"
+                             Name="FriendlyAppName" Type="string" Value="word4win"/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\shell\open\command"
+                             Type="string" Value="&quot;[INSTALLDIR]word4win.exe&quot; &quot;%1&quot;"/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".rtf" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".md" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".markdown" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".html" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".htm" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".docx" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".odt" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Classes\Applications\word4win.exe\SupportedTypes"
+                             Name=".txt" Type="string" Value=""/>
+              <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\word4win.exe"
+                             Type="string" Value="[INSTALLDIR]word4win.exe"/>
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <Shortcut Id="word4winShortcut" Name="word4win" Description="Word processor"
+                    Target="[INSTALLDIR]word4win.exe" WorkingDirectory="INSTALLDIR"/>
+          <RegistryValue Root="HKCU" Key="Software\word4win" Name="installed"
+                         Type="integer" Value="1" KeyPath="yes"/>
+        </Component>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="MainExecutable"/>
+      <ComponentRef Id="OpenWith"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+    </Feature>
+  </Product>
+</Wix>
