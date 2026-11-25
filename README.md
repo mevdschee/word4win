@@ -1,13 +1,15 @@
 # word4win
 
-A WordPad for Windows, written in Go with
-[Windigo](https://github.com/rodrigocfd/windigo). It looks and works like the
-classic WordPad: a menu bar, a toolbar, a format bar, the ruler and the same
+WordPad was removed from Windows in 24H2. word4win brings it back, free and
+small, and also reads and writes Markdown and HTML, opens Word and LibreOffice
+documents and exports PDF. Written in Go with
+[Windigo](https://github.com/rodrigocfd/windigo).
+
+It looks and works like the classic WordPad: a menu bar, a toolbar, a format bar, the ruler and the same
 shortcuts, drawn flat with the Fluent icons of the other 4win apps. Like WordPad it edits rich text (RTF)
 in the RichEdit control of Windows. Unlike WordPad it also reads and writes
 Markdown and HTML, reads Word (.docx) and LibreOffice (.odt) documents, and
-exports PDF. The print preview has a scale. WordPad is gone from Windows
-since 24H2; word4win is a small, free replacement.
+exports PDF. The print preview has a scale.
 
 ![word4win](screenshot.png)
 
@@ -36,7 +38,8 @@ since 24H2; word4win is a small, free replacement.
 - Recent documents in the File menu, a file dropped on the window opens it.
 - Follows the light and dark app mode of Windows (the page stays white).
 - Checks for a newer release on request (Help, Check for updates) and
-  installs it. Nothing is checked automatically.
+  installs it, or opens the download page in a portable copy. Nothing is
+  checked automatically.
 
 ## Formats
 
@@ -124,6 +127,24 @@ After the install word4win is in the "Open with" list of Explorer for .rtf,
 It does not take over any file type: choose "Open with", "Choose another app"
 and "Always" if you want that.
 
+To use it without installing, download `word4win-<version>-amd64.exe` instead
+and run it from anywhere. It is the same program the installer installs. The
+settings still go to `%APPDATA%\word4win`, it is not in the "Open with" list,
+and Check for updates opens the download page instead of installing. For
+Windows on ARM there is `word4win-<version>-arm64.exe`, a native build that is
+only available as a portable exe; the installer works there too, but runs the
+amd64 build emulated.
+
+Each release has a `SHA256SUMS` file. To check a download, compare its hash
+with the one listed there, for example in PowerShell:
+
+    Get-FileHash word4win-<version>-amd64.exe
+
+The files are not signed, so SmartScreen and some virus scanners may warn
+about them, as they do for many unsigned programs. If one does, check the
+hash first. The source and the build script are in this repository, so you can
+also build the exe yourself.
+
 It runs on 64-bit Windows 10 and 11. The command line takes a file to open,
 and `word4win /p file` prints it on the default printer.
 
@@ -141,7 +162,7 @@ Install the tools once:
     go install github.com/tc-hib/go-winres@latest
 
 The icon, manifest (visual styles, DPI awareness) and version info are
-compiled from `winres/` into `cmd/word4win/rsrc_windows_amd64.syso`, which is
+compiled from `winres/` into `cmd/word4win/rsrc_windows_<arch>.syso`, which is
 not committed. `run.sh` and `release.sh` generate it.
 
     go test ./...
@@ -179,8 +200,11 @@ The icon is `winres/icon.svg`; after changing it, run `go run ./tools/genicon`
 
 `release.sh` needs a clean working tree. It raises the version in
 `winres/winres.json`, runs the tests, builds
-`dist/word4win-<version>-amd64.msi`, commits and pushes the version bump and
-creates the GitHub release with the MSI. Besides the build tools above it
+`dist/word4win-<version>-amd64.msi`, the portable
+`dist/word4win-<version>-amd64.exe` and `dist/word4win-<version>-arm64.exe`
+and `dist/SHA256SUMS`, commits and pushes the version bump and creates the
+GitHub release with those four files. wixl cannot build an arm64 MSI, so
+arm64 is only a portable exe. Besides the build tools above it
 needs the GitHub CLI (`gh`). The installer is defined in
 `installer/word4win.wxs`.
 

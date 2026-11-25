@@ -643,6 +643,18 @@ func showAbout(a *App) {
 	}
 }
 
+// installed reports whether this is the copy the MSI installed, in
+// %LOCALAPPDATA%\Programs\word4win, and not the portable exe. A portable copy
+// cannot update itself: the MSI would install a second copy next to it.
+func installed() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	dir := filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "word4win")
+	return strings.EqualFold(filepath.Clean(filepath.Dir(exe)), filepath.Clean(dir))
+}
+
 func (a *App) checkForUpdates() {
 	h := a.wnd.Hwnd()
 	if !update.IsRelease(a.version) {
@@ -658,6 +670,13 @@ func (a *App) checkForUpdates() {
 		return
 	case !ok || !update.Newer(r.Version, a.version):
 		h.MessageBox(appName+" is up to date. You have the latest version ("+a.version+").", appName, co.MB_ICONINFORMATION)
+		return
+	case !installed():
+		ret, _ := h.MessageBox(fmt.Sprintf("%s %s is available (you have %s).\n\nThis copy is not installed, so it cannot update itself. Open the download page?",
+			appName, r.Version, a.version), appName, co.MB_YESNO|co.MB_ICONINFORMATION)
+		if ret == co.ID_YES {
+			shellOpen(h, repoURL+"/releases/latest")
+		}
 		return
 	}
 	ret, _ := h.MessageBox(fmt.Sprintf("%s %s is available (you have %s).\n\nDownload and install it now? %s closes during the installation.",

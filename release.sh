@@ -15,8 +15,12 @@
 # three numbers, so every release raises at least the build. The revision
 # goes up on every release as well.
 #
-# The script builds dist/word4win-<version>-amd64.msi, commits and pushes the
-# version bump and creates the GitHub release v<version> with the MSI. With
+# The script builds dist/word4win-<version>-amd64.msi, the portable
+# dist/word4win-<version>-amd64.exe (the same exe the MSI installs), the
+# portable dist/word4win-<version>-arm64.exe (wixl cannot build an arm64 MSI;
+# Windows 11 on ARM runs the amd64 one emulated) and dist/SHA256SUMS, commits
+# and pushes the version bump and creates the GitHub release v<version> with
+# those four files. With
 # "msi" it stops after building: nothing is changed, committed or published,
 # which is for trying the installer.
 set -e
@@ -56,11 +60,13 @@ fi
 
 # Build the exe: icon, manifest and version info (cmd/word4win/rsrc_windows_amd64.syso,
 # not committed) and the version, which the About window shows.
-~/go/bin/go-winres make --arch amd64 --out cmd/word4win/rsrc
+~/go/bin/go-winres make --arch amd64,arm64 --out cmd/word4win/rsrc
 go test ./...
 GOOS=windows go vet ./...
 rm -rf dist && mkdir dist
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-H windowsgui -s -w -X main.version=$version" -o dist/word4win.exe ./cmd/word4win
+arm=dist/word4win-$version-arm64.exe
+GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-H windowsgui -s -w -X main.version=$version" -o $arm ./cmd/word4win
 
 # Build the MSI.
 msi=dist/word4win-$version-amd64.msi
@@ -80,10 +86,16 @@ msibuild $msi -i dist/seq.idt
 rm dist/seq.idt
 # The exe must be versioned in the File table, see installer/word4win.wxs.
 msiinfo export $msi File | grep -q $'\t'"$version.$revision"$'\t'
-ls -l $msi
+
+# The portable amd64 exe and the checksums.
+exe=dist/word4win-$version-amd64.exe
+cp dist/word4win.exe $exe
+(cd dist && sha256sum "$(basename $msi)" "$(basename $exe)" "$(basename $arm)" >SHA256SUMS)
+ls -l $msi $exe $arm
+cat dist/SHA256SUMS
 [ $part != msi ] || exit 0
 
 # Commit, push and publish.
 git commit -q -m "Release v$version" $json
 git push
-gh release create v$version --title v$version $msi
+gh release create v$version --title v$version $msi $exe $arm dist/SHA256SUMS
