@@ -119,8 +119,7 @@ Download `word4win-<version>-amd64.msi` from the
 installs `word4win.exe` in `%LOCALAPPDATA%\Programs\word4win` and adds a
 "word4win" shortcut to the Start menu. It installs for the current user only,
 so it does not need admin rights. Newer versions replace older ones. The
-installer is not signed, so Windows SmartScreen may ask you to confirm ("More
-info", "Run anyway").
+installer is signed by Maussoft B.V., see "Code signing" below.
 
 After the install word4win is in the "Open with" list of Explorer for .rtf,
 .md, .html, .docx, .odt and .txt files, and `word4win` works in the Run box.
@@ -140,10 +139,15 @@ with the one listed there, for example in PowerShell:
 
     Get-FileHash word4win-<version>-amd64.exe
 
-The files are not signed, so SmartScreen and some virus scanners may warn
-about them, as they do for many unsigned programs. If one does, check the
-hash first. The source and the build script are in this repository, so you can
-also build the exe yourself.
+### Code signing
+
+Since version 0.1.8 the installer and the exes are signed with a Certum code
+signing certificate issued to Maussoft B.V. To check, right-click the file in
+Explorer, choose Properties and open the "Digital Signatures" tab. SmartScreen
+may still warn about a new release until enough people have downloaded it
+("More info", "Run anyway"). Do not run a file that is not signed by Maussoft
+B.V. The source and the build script are in this repository, so you can also
+build the exe yourself.
 
 It runs on 64-bit Windows 10 and 11. The command line takes a file to open,
 and `word4win /p file` prints it on the default printer.
@@ -203,10 +207,12 @@ The icon is `winres/icon.svg`; after changing it, run `go run ./tools/genicon`
 `dist/word4win-<version>-amd64.msi`, the portable
 `dist/word4win-<version>-amd64.exe` and `dist/word4win-<version>-arm64.exe`
 and `dist/SHA256SUMS`, commits and pushes the version bump and creates the
-GitHub release with those four files. wixl cannot build an arm64 MSI, so
-arm64 is only a portable exe. Besides the build tools above it
-needs the GitHub CLI (`gh`). The installer is defined in
-`installer/word4win.wxs`.
+GitHub release with those four files. wixl cannot build an arm64 MSI, so arm64
+is only a portable exe. Besides the build tools above it needs the GitHub CLI
+(`gh`). The installer is defined in `installer/word4win.wxs`. `release.sh`
+signs the exes and the MSI with jsign and the Certum certificate in
+SimplySign; start SimplySign Desktop and connect it first. The settings are at
+its top.
 
 ## Layout
 
