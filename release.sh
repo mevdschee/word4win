@@ -56,7 +56,7 @@ if ! command -v ssctl >/dev/null || ! ssctl info >/dev/null; then
 fi
 sign() {
 	[ -n "$signing" ] || return 0
-	ssctl sign "$1"
+	ssctl sign --name word4win --url https://github.com/mevdschee/word4win "$1"
 }
 
 # Bump the version.
